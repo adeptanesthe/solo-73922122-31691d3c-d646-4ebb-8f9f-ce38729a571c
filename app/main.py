@@ -5,6 +5,7 @@
 * ``GET  /health``           健康检查
 * ``GET  /scenarios``        内置边界情形样例列表
 * ``POST /verify``           单次核对（自定义分块算子 vs 独立稠密参考）
+* ``POST /alignment-loss``   对齐损失核对（分块算子 vs 独立稠密参考）
 * ``POST /scenarios/run``    运行全部或单个内置样例
 * ``GET  /docs``             Swagger UI（自动生成）
 """
@@ -14,17 +15,24 @@ from __future__ import annotations
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
+from .alignment_verification import run_alignment_verification
 from .scenarios import SCENARIOS
-from .schemas import VerifyRequest, VerifyResponse
+from .schemas import (
+    AlignmentLossRequest,
+    AlignmentLossResponse,
+    VerifyRequest,
+    VerifyResponse,
+)
 from .verification import TOLERANCE, run_verification
 
 app = FastAPI(
     title="分块文档内因果注意力核对 API",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "CPU + float64 环境下，对自定义分块（文档内因果）注意力 autograd 算子"
         "与独立稠密参考实现进行前向输出和 Q/K/V 梯度核对，容差为 1e-8。"
-        "工作张量与跨前后向保存量规模为 O(N + 块长²)。"
+        "另提供 /alignment-loss：按工程师标注的证据 key 计算分块对齐损失，"
+        "并核对损失与 Q/K 梯度。工作张量与跨前后向保存量规模为 O(N + 块长²)。"
     ),
 )
 
@@ -55,6 +63,18 @@ def verify(
     result = run_verification(req, include_tensors=include_tensors)
     # 核对失败属于业务结果而非服务错误：返回 200 并在体内明确 passed=false。
     return result
+
+
+@app.post("/alignment-loss", response_model=AlignmentLossResponse)
+def alignment_loss(
+    req: AlignmentLossRequest,
+    include_tensors: bool = Query(
+        default=True, description="是否在响应中回传完整 Q/K 梯度张量"
+    ),
+) -> AlignmentLossResponse:
+    # 标注不合法（跨文档/晚于查询/重复等）在 schema 校验阶段整单拒绝（422），
+    # 不产生任何部分梯度；通过校验后再执行双路核对。
+    return run_alignment_verification(req, include_tensors=include_tensors)
 
 
 @app.post("/scenarios/run")
